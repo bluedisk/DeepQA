@@ -96,7 +96,7 @@ class Chatbot:
         globalArgs.add_argument('--playDataset', type=int, nargs='?', const=10, default=None,  help='if set, the program  will randomly play some samples(can be use conjointly with createDataset if this is the only action you want to perform)')
         globalArgs.add_argument('--reset', action='store_true', help='use this if you want to ignore the previous model present on the model directory (Warning: the model will be destroyed with all the folder content)')
         globalArgs.add_argument('--verbose', action='store_true', help='When testing, will plot the outputs at the same time they are computed')
-        globalArgs.add_argument('--keep', type=int, default=5, help='Maximum number of recent checkpoints to keep. Defaults to 5.')
+        globalArgs.add_argument('--keep', type=int, default=10, help='Maximum number of recent checkpoints to keep. Defaults to 5.')
         globalArgs.add_argument('--modelTag', type=str, default=None, help='tag to differentiate which model to store/load')
         globalArgs.add_argument('--rootDir', type=str, default=None, help='folder where to look for the models and data')
         globalArgs.add_argument('--watsonMode', action='store_true', help='Inverse the questions and answer when training (the network try to guess the question)')
@@ -109,10 +109,11 @@ class Chatbot:
         datasetArgs.add_argument('--datasetTag', type=str, default=None, help='add a tag to the dataset (file where to load the vocabulary and the precomputed samples, not the original corpus). Useful to manage multiple versions')  # The samples are computed from the corpus if it does not exist already. There are saved in \'data/samples/\'
         datasetArgs.add_argument('--ratioDataset', type=float, default=1.0, help='ratio of dataset used to avoid using the whole dataset')  # Not implemented, useless ?
         datasetArgs.add_argument('--maxLength', type=int, default=200, help='maximum length of the sentence (for input and output), define number of maximum step of the RNN')
+        datasetArgs.add_argument('--vocabLimit', type=int, default=30000, help='maximum length of the words (using only top n words), -1 is unlimited words')
 
         # Network options (Warning: if modifying something here, also make the change on save/loadParams() )
         nnArgs = parser.add_argument_group('Network options', 'architecture related option')
-        nnArgs.add_argument('--hiddenSize', type=int, default=256, help='number of hidden units in each RNN cell')
+        nnArgs.add_argument('--hiddenSize', type=int, default=512, help='number of hidden units in each RNN cell')
         nnArgs.add_argument('--numLayers', type=int, default=2, help='number of rnn layers')
         nnArgs.add_argument('--embeddingSize', type=int, default=32, help='embedding size of the word representation')
         nnArgs.add_argument('--initEmbeddings', action='store_true', help='if present, the program will initialize the embeddings with pre-trained word2vec vectors')
@@ -233,12 +234,15 @@ class Chatbot:
 
                 # TODO: Also update learning parameters eventually
 
+                with open(os.path.join(self.args.rootDir, self.TEST_IN_NAME), 'r', encoding='utf8') as f:
+                    lines = f.readlines()
+
                 losses = []
 
                 tic = datetime.datetime.now()
                 for nextBatch in tqdm(batches, desc="Training"):
                     # Training pass
-                    ops, feedDict = self.model.step(nextBatch)
+                    ops, feedDict = self.model.step(nextBatch, is_test=False)
                     assert len(ops) == 2  # training, loss
                     _, loss, summary = sess.run(ops + (mergedSummaries,), feedDict)
                     losses.append(loss);
@@ -249,6 +253,25 @@ class Chatbot:
                     # Checkpoint
                     if self.globStep % self.args.saveEvery == 0:
                         self._saveSession(sess)
+                        with open("{}-test-{}.txt".format(self._getModelName(), self.globStep), 'w', encoding='utf8') as f:
+                            nbIgnored = 0
+                            for line in tqdm(lines, desc='Sentences'):
+                                question = line[:-1]  # Remove the endl character
+   
+                                answer, prob = self.singlePredict(question)
+                                if not answer:
+                                    nbIgnored += 1
+                                    continue  # Back to the beginning, try again
+   
+                                predString = '{x[0]}{0}\n{x[1]}{1} {2}\n\n'.\
+                                    format(question,
+                                           self.textData.sequence2str(answer, clean=True),
+                                           prob,
+                                           x=self.SENTENCES_PREFIX)
+                                if self.args.verbose:
+                                    tqdm.write(predString)
+                                f.write(predString)
+                            print('Testing finished, {}/{} sentences ignored (too long)'.format(nbIgnored, len(lines)))
 
                 toc = datetime.datetime.now()
                 avg_loss = np.mean(losses)
@@ -353,7 +376,7 @@ class Chatbot:
             questionSeq.extend(batch.encoderSeqs)
 
         # Run the model
-        ops, feedDict = self.model.step(batch)
+        ops, feedDict = self.model.step(batch, is_test=True)
         # output.shape (202, 1, 36439)
         output = self.sess.run(ops[0], feedDict)  # TODO: Summarize the output too (histogram, ...)
         answer, prob = self.textData.deco2sentence(output)
@@ -511,6 +534,7 @@ class Chatbot:
             # Restoring the the parameters
             self.globStep = config['General'].getint('globStep')
             self.args.maxLength = config['General'].getint('maxLength')  # We need to restore the model length because of the textData associated and the vocabulary size (TODO: Compatibility mode between different maxLength)
+            self.args.vocabLimit = config['General'].getint('vocabLimit')
             self.args.watsonMode = config['General'].getboolean('watsonMode')
             self.args.corpus = config['General'].get('corpus')
             #self.args.datasetTag = config['General'].get('datasetTag')
@@ -528,6 +552,7 @@ class Chatbot:
             print('Warning: Restoring parameters:')
             print('globStep: {}'.format(self.globStep))
             print('maxLength: {}'.format(self.args.maxLength))
+            print('vocabLimit: {}'.format(self.args.vocabLimit))
             print('watsonMode: {}'.format(self.args.watsonMode))
             print('corpus: {}'.format(self.args.corpus))
             print('hiddenSize: {}'.format(self.args.hiddenSize))
@@ -554,6 +579,7 @@ class Chatbot:
         config['General']['version']  = self.CONFIG_VERSION
         config['General']['globStep']  = str(self.globStep)
         config['General']['maxLength'] = str(self.args.maxLength)
+        config['General']['vocabLimit'] = str(self.args.vocabLimit)
         config['General']['watsonMode'] = str(self.args.watsonMode)
         config['General']['corpus'] = str(self.args.corpus)
 

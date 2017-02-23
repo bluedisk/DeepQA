@@ -26,10 +26,12 @@ import pickle  # Saving the data
 import math  # For float comparison
 import os  # Checking file existance
 import random
+import codecs
 
 from chatbot.cornelldata import CornellData
 from chatbot.opensubsdata import OpensubsData
 from chatbot.fbdata import FBData
+
 
 class Batch:
     """Struct containing batches info
@@ -43,8 +45,8 @@ class Batch:
 
 class TextData:
     """Dataset class
-    Warning: No vocabulary limit
     """
+    pos_tagger = Twitter()
 
     def __init__(self, args):
         """Load all conversations
@@ -272,12 +274,47 @@ class TextData:
         self.eosToken = self.getWordId("<eos>")  # End of sequence
         self.unknownToken = self.getWordId("<unknown>")  # Word dropped from vocabulary
 
-        # Preprocessing data
+        # extract top n words
+        self.extractWords(conversations)
 
+        # Preprocessing data
         for conversation in tqdm(conversations, desc="Extract conversations"):
             self.extractConversation(conversation)
 
         # The dataset will be saved in the same order it has been extracted
+
+    def extractWords(self, conversations):
+        """Extract the top n words from the conversations
+        Args:
+            conversation (Obj): a conversation object containing the lines to extract
+        """
+
+        word_count = []
+        word_count_map = {}
+
+        for conversation in tqdm(conversations, desc="Extract words(Top {})".format(self.args.vocabLimit)):
+            for line in conversation["lines"]:  # We ignore the last line (no answer for it)
+
+                tokens = self.pos_tagger.morphs(line["text"])
+                for token in tokens:
+                    idx = word_count_map.get(token, None)
+
+                    if idx:
+                        word_count[idx][0] += 1
+                    else:
+                        word_count_map[token] = len(word_count)
+                        word_count.append([1, token])
+
+        del word_count_map
+        word_count.sort()
+        word_count.reverse()
+
+        with codecs.open("words.txt", "w", encoding='utf-8') as f:
+            for count, word in word_count[:self.args.vocabLimit]:
+
+                f.write("{} {}\r\n".format(word, count))
+                _ = self.getWordId(word, True)
+
 
     def extractConversation(self, conversation):
         """Extract the sample lines from the conversations
@@ -306,7 +343,6 @@ class TextData:
         """
         words = []
 
-        pos_tagger = Twitter()
         # Extract sentences
         sentencesToken = nltk.sent_tokenize(line)
 
@@ -318,13 +354,13 @@ class TextData:
                 i = len(sentencesToken)-1 - i
 
             # tokens = nltk.word_tokenize(sentencesToken[i])  # eng token
-            tokens = ["{}/{}".format(t, p) for t, p in pos_tagger.pos(sentencesToken[i], norm=True, stem=True)] # kor token
+            tokens = self.pos_tagger.morphs(sentencesToken[i])
 
             # If the total length is not too big, we still can add one more sentence
             if len(words) + len(tokens) <= self.args.maxLength:
                 tempWords = []
                 for token in tokens:
-                    tempWords.append(self.getWordId(token))  # Create the vocabulary and the training sentences
+                    tempWords.append(self.getWordId(token, False))  # Create the vocabulary and the training sentences
 
                 if isTarget:
                     words = words + tempWords
@@ -428,7 +464,8 @@ class TextData:
             return None
 
         # First step: Divide the sentence in token
-        tokens = nltk.word_tokenize(sentence)
+        #tokens = nltk.word_tokenize(sentence)
+        tokens = self.pos_tagger.morphs(sentence)
         if len(tokens) > self.args.maxLength:
             return None
 
