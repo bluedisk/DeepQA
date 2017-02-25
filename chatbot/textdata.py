@@ -360,7 +360,9 @@ class TextData:
             if len(words) + len(tokens) <= self.args.maxLength:
                 tempWords = []
                 for token in tokens:
-                    tempWords.append(self.getWordId(token, False))  # Create the vocabulary and the training sentences
+                    idx = self.getWordId(token, False)
+                    if idx != self.unknownToken:
+                        tempWords.append(idx)  # Create the vocabulary and the training sentences
 
                 if isTarget:
                     words = words + tempWords
@@ -472,7 +474,9 @@ class TextData:
         # Second step: Convert the token in word ids
         wordIds = []
         for token in tokens:
-            wordIds.append(self.getWordId(token, create=False))  # Create the vocabulary and the training sentences
+            idx = self.getWordId(token, create=False)
+            if idx != self.unknownToken:
+                wordIds.append(idx)  # Create the vocabulary and the training sentences
 
         # Third step: creating the batch (add padding, reverse)
         batch = self._createBatch([[wordIds, []]])  # Mono batch, no target output

@@ -235,7 +235,7 @@ class Chatbot:
                 # TODO: Also update learning parameters eventually
 
                 with open(os.path.join(self.args.rootDir, self.TEST_IN_NAME), 'r', encoding='utf8') as f:
-                    lines = f.readlines()
+                    test_lines = f.readlines()
 
                 losses = []
 
@@ -245,7 +245,7 @@ class Chatbot:
                     ops, feedDict = self.model.step(nextBatch, is_test=False)
                     assert len(ops) == 2  # training, loss
                     _, loss, summary = sess.run(ops + (mergedSummaries,), feedDict)
-                    losses.append(loss);
+                    losses.append(loss)
 
                     self.writer.add_summary(summary, self.globStep)
                     self.globStep += 1
@@ -253,25 +253,11 @@ class Chatbot:
                     # Checkpoint
                     if self.globStep % self.args.saveEvery == 0:
                         self._saveSession(sess)
-                        with open("{}-test-{}.txt".format(self._getModelName(), self.globStep), 'w', encoding='utf8') as f:
-                            nbIgnored = 0
-                            for line in tqdm(lines, desc='Sentences'):
-                                question = line[:-1]  # Remove the endl character
-   
-                                answer, prob = self.singlePredict(question)
-                                if not answer:
-                                    nbIgnored += 1
-                                    continue  # Back to the beginning, try again
-   
-                                predString = '{x[0]}{0}\n{x[1]}{1} {2}\n\n'.\
-                                    format(question,
-                                           self.textData.sequence2str(answer, clean=True),
-                                           prob,
-                                           x=self.SENTENCES_PREFIX)
-                                if self.args.verbose:
-                                    tqdm.write(predString)
-                                f.write(predString)
-                            print('Testing finished, {}/{} sentences ignored (too long)'.format(nbIgnored, len(lines)))
+                        self.predictAndSave(
+                            "{}-test-{}.txt".format(self._getModelName(), self.globStep),
+                            test_lines,
+                            sess
+                        )
 
                 toc = datetime.datetime.now()
                 avg_loss = np.mean(losses)
@@ -281,6 +267,27 @@ class Chatbot:
             print('Interruption detected, exiting the program...')
 
         self._saveSession(sess)  # Ultimate saving before complete exit
+
+    def predictAndSave(self, target, lines, sess):
+        with open(target, 'w', encoding='utf8') as f:
+            ignored = 0
+            for line in tqdm(lines, desc='Sentences'):
+                question = line[:-1]  # Remove the endl character
+
+                answer, prob = self.singlePredict(question)
+                if not answer:
+                    ignored += 1
+                    continue  # Back to the beginning, try again
+
+                pred = '{x[0]}{0}\n{x[1]}{1} {2}\n\n'. \
+                    format(question,
+                           self.textData.sequence2str(answer, clean=True),
+                           prob,
+                           x=self.SENTENCES_PREFIX)
+                if self.args.verbose:
+                    tqdm.write(pred)
+                f.write(pred)
+            print('Testing finished, {}/{} sentences ignored (too long)'.format(ignored, len(lines)))
 
     def predictTestset(self, sess):
         """ Try predicting the sentences from the samples.txt file.
@@ -293,38 +300,23 @@ class Chatbot:
         with open(os.path.join(self.args.rootDir, self.TEST_IN_NAME), 'r', encoding='utf8') as f:
             lines = f.readlines()
 
-        modelList = tf.train.get_checkpoint_state(self.modelDir).all_model_checkpoint_paths
+        models = tf.train.get_checkpoint_state(self.modelDir).all_model_checkpoint_paths
 
-        if not modelList:
+        if not models:
             print('Warning: No model found in \'{}\'. Please train a model before trying to predict'.format(self.modelDir))
             return
 
         # Predicting for each model present in modelDir
-        for modelName in sorted(modelList):
-            print('Restoring previous model from {}'.format(modelName))
-            self.saver.restore(sess, modelName)
+        for model in sorted(models):
+            print('Restoring previous model from {}'.format(model))
+            self.saver.restore(sess, model)
             print('Testing...')
 
-            saveName = modelName + self.TEST_OUT_SUFFIX  # We remove the model extension and add the prediction suffix
-            with open(saveName, 'w', encoding='utf8') as f:
-                nbIgnored = 0
-                for line in tqdm(lines, desc='Sentences'):
-                    question = line[:-1]  # Remove the endl character
-
-                    answer, prob = self.singlePredict(question)
-                    if not answer:
-                        nbIgnored += 1
-                        continue  # Back to the beginning, try again
-
-                    predString = '{x[0]}{0}\n{x[1]}{1} {2}\n\n'.\
-                        format(question,
-                               self.textData.sequence2str(answer, clean=True),
-                               prob,
-                               x=self.SENTENCES_PREFIX)
-                    if self.args.verbose:
-                        tqdm.write(predString)
-                    f.write(predString)
-                print('Prediction finished, {}/{} sentences ignored (too long)'.format(nbIgnored, len(lines)))
+            self.predictAndSave(
+                model + self.TEST_OUT_SUFFIX,
+                lines,
+                sess
+            )
 
     def mainTestInteractive(self, sess):
         """ Try predicting the sentences that the user will enter in the console
